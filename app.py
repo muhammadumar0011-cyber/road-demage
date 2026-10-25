@@ -1,85 +1,131 @@
-
 import streamlit as st
 from ultralytics import YOLO
-from PIL import Image
-import pandas as pd
+from pathlib import Path
+import tempfile
 
 st.set_page_config(
-    page_title="Pothole Detection",
-    page_icon="🚧",
+    page_title="Road Damage Detection",
+    page_icon="🛣️",
     layout="wide"
 )
 
-st.title("🚧 Pothole Detection System")
+st.title("Road Damage Detection System")
 st.write(
-    "Upload a road image to detect potholes "
-    "using my custom-trained YOLO11n model."
+    "Upload a road video to detect potholes, "
+    "cracks, and damaged road areas."
 )
 
+# Location of your trained model
+MODEL_PATH = Path(__file__).parent / "best.pt"
+
+
+# Load the model once
 @st.cache_resource
 def load_model():
-    return YOLO("best.pt")
+    return YOLO(str(MODEL_PATH))
 
-model = load_model()
 
+# Check that the model exists
+if not MODEL_PATH.exists():
+    st.error("best.pt was not found in your GitHub repository.")
+    st.stop()
+
+
+# Upload video
+uploaded_video = st.file_uploader(
+    "Upload a road video",
+    type=["mp4", "mov", "avi"]
+)
+
+# Confidence threshold
 confidence = st.slider(
     "Detection confidence",
     min_value=0.10,
-    max_value=1.00,
-    value=0.25,
+    max_value=0.95,
+    value=0.35,
     step=0.05
 )
 
-uploaded_file = st.file_uploader(
-    "Choose a road image",
-    type=["jpg", "jpeg", "png"]
-)
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
+if uploaded_video is not None:
 
-    st.subheader("Original Image")
-    st.image(image, use_container_width=True)
+    # Save uploaded video temporarily
+    video_suffix = Path(uploaded_video.name).suffix.lower()
 
-    if st.button("Detect Potholes", type="primary"):
-        with st.spinner("Analyzing image..."):
-            result = model.predict(
-                source=image,
-                conf=confidence,
-                verbose=False
-            )[0]
+    with tempfile.TemporaryDirectory() as temp_dir:
 
-        # Convert the annotated image from BGR to RGB
-        annotated = result.plot()[:, :, ::-1]
+        temp_path = Path(temp_dir)
 
-        st.subheader("Detection Results")
-        st.image(
-            annotated,
-            caption="Image with detected objects",
-            use_container_width=True
-        )
+        input_video = temp_path / f"input{video_suffix}"
 
-        if len(result.boxes) == 0:
-            st.info("No objects detected at this confidence level.")
-        else:
-            rows = []
+        input_video.write_bytes(uploaded_video.getvalue())
 
-            for box in result.boxes:
-                class_id = int(box.cls[0].item())
-                score = float(box.conf[0].item())
+        st.subheader("Original Video")
+        st.video(uploaded_video.getvalue())
 
-                rows.append({
-                    "Detected Class": result.names[class_id],
-                    "Confidence": f"{score:.2%}"
-                })
+        if st.button("Detect Road Damage", type="primary"):
 
-            st.subheader("Detected Objects")
-            st.dataframe(
-                pd.DataFrame(rows),
-                use_container_width=True,
-                hide_index=True
-            )
+            output_dir = temp_path / "output"
 
-            st.success(
-                f"Detected {len(result.boxes)} object(s)."
-            )
+            try:
+                model = load_model()
+
+                with st.spinner(
+                    "Processing video... Please wait."
+                ):
+
+                    # Run detection frame by frame
+                    results = model.predict(
+                        source=str(input_video),
+                        conf=confidence,
+                        imgsz=640,
+                        stream=True,
+                        save=True,
+                        project=str(output_dir),
+                        name="results",
+                        exist_ok=True,
+                        verbose=False
+                    )
+
+                    # Process every frame
+                    for result in results:
+                        pass
+
+                    # Find the generated video
+                    result_folder = output_dir / "results"
+
+                    video_files = [
+                        path
+                        for path in result_folder.iterdir()
+                        if path.is_file()
+                        and path.suffix.lower() in [
+                            ".mp4", ".avi", ".mov", ".mkv"
+                        ]
+                    ]
+
+                    if not video_files:
+                        st.error(
+                            "The processed video was not found. "
+                            "Check the app logs for errors."
+                        )
+
+                    else:
+                        processed_video = video_files[0]
+
+                        st.success(
+                            "Video processing completed!"
+                        )
+
+                        st.subheader("Road Damage Detection Result")
+
+                        st.video(processed_video.read_bytes())
+
+                        st.download_button(
+                            label="Download Processed Video",
+                            data=processed_video.read_bytes(),
+                            file_name="road_damage_detected.mp4",
+                            mime="video/mp4"
+                        )
+
+            except Exception as error:
+                st.error(f"Video processing failed: {error}")
